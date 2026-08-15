@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Order {{ order_id }} ready</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="container">
+    <h1>Order saved</h1>
+    <p>Order <span class="mono">{{ order_id }}</span> is saved as JSON and marked <strong>ready_for_automation</strong>.</p>
+    <p class="hint">UI automation against Fakturama isn't wired up yet &mdash; this is the saved record it would consume next.</p>
+    <pre class="json-preview">{{ order | tojson(indent=2) }}</pre>
+    <a href="{{ url_for('index') }}">&larr; Extract another order</a>
+  </main>
+</body>
+</html>

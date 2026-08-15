@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Review order {{ order_id }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="container wide">
+    <h1>Review order <span class="mono">{{ order_id }}</span></h1>
+    <p class="subtitle">Status: <strong>{{ order._meta.status }}</strong> &mdash; fix anything the extraction got wrong, add missing rows, then save.</p>
+
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        <ul class="flash">{% for m in messages %}<li>{{ m }}</li>{% endfor %}</ul>
+      {% endif %}
+    {% endwith %}
+
+    <form action="{{ url_for('save_review', order_id=order_id) }}" method="post" id="review-form">
+
+      <fieldset>
+        <legend>Order</legend>
+        <div class="grid-4">
+          <label>Order date<input type="date" name="order_date" value="{{ order.order.order_date or '' }}"></label>
+          <label>External reference<input type="text" name="external_reference" value="{{ order.order.external_reference or '' }}"></label>
+          <label>Customer ID<input type="text" name="customer_id" value="{{ order.order.customer_id or '' }}"></label>
+          <label>Currency<input type="text" name="currency" value="{{ order.order.currency or '' }}"></label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Debtor &amp; contact</legend>
+        <div class="grid-3">
+          <label>Company<input type="text" name="debtor_company" value="{{ order.debtor.company or '' }}"></label>
+          <label>Contact name<input type="text" name="debtor_contact_name" value="{{ order.debtor.contact_name or '' }}"></label>
+          <label>Alias<input type="text" name="debtor_alias" value="{{ order.debtor.alias or '' }}"></label>
+          <label>Email<input type="email" name="debtor_email" value="{{ order.debtor.email or '' }}"></label>
+          <label>Phone<input type="text" name="debtor_phone" value="{{ order.debtor.phone or '' }}"></label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Billing address</legend>
+        <div class="grid-4">
+          <label>Street<input type="text" name="billing_street" value="{{ order.debtor.billing_address.street or '' }}"></label>
+          <label>ZIP<input type="text" name="billing_zip" value="{{ order.debtor.billing_address.zip or '' }}"></label>
+          <label>City<input type="text" name="billing_city" value="{{ order.debtor.billing_address.city or '' }}"></label>
+          <label>Country<input type="text" name="billing_country" value="{{ order.debtor.billing_address.country or '' }}"></label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Delivery address</legend>
+        <div class="grid-4">
+          <label>Street<input type="text" name="delivery_street" value="{{ order.debtor.delivery_address.street or '' }}"></label>
+          <label>ZIP<input type="text" name="delivery_zip" value="{{ order.debtor.delivery_address.zip or '' }}"></label>
+          <label>City<input type="text" name="delivery_city" value="{{ order.debtor.delivery_address.city or '' }}"></label>
+          <label>Country<input type="text" name="delivery_country" value="{{ order.debtor.delivery_address.country or '' }}"></label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Payment</legend>
+        <div class="grid-3">
+          <label>Payment method<input type="text" name="payment_method" value="{{ order.debtor.payment_method or '' }}"></label>
+          <label>Paid status
+            <select name="paid_status">
+              <option value="" {% if not order.debtor.paid_status %}selected{% endif %}>Unknown</option>
+              <option value="PAID" {% if order.debtor.paid_status == 'PAID' %}selected{% endif %}>PAID</option>
+              <option value="UNPAID" {% if order.debtor.paid_status == 'UNPAID' %}selected{% endif %}>UNPAID</option>
+            </select>
+          </label>
+          <label>Payment date<input type="date" name="payment_date" value="{{ order.debtor.payment_date or '' }}"></label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Items</legend>
+        <table id="items-table">
+          <thead>
+            <tr>
+              <th>SKU</th><th>Description</th><th>Qty</th><th>Unit</th>
+              <th>Unit net</th><th>Disc. %</th><th>VAT %</th><th>Line net</th><th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in order['items'] %}
+            <tr>
+              <td><input type="text" name="item_sku" value="{{ item.sku or '' }}"></td>
+              <td><input type="text" name="item_description" value="{{ item.description or '' }}"></td>
+              <td><input type="number" step="any" name="item_quantity" value="{{ item.quantity if item.quantity is not none else '' }}"></td>
+              <td><input type="text" name="item_unit" value="{{ item.unit or '' }}"></td>
+              <td><input type="number" step="any" name="item_unit_net_price" value="{{ item.unit_net_price if item.unit_net_price is not none else '' }}"></td>
+              <td><input type="number" step="any" name="item_discount_pct" value="{{ item.discount_pct if item.discount_pct is not none else '' }}"></td>
+              <td><input type="number" step="any" name="item_vat_pct" value="{{ item.vat_pct if item.vat_pct is not none else '' }}"></td>
+              <td><input type="number" step="any" name="item_line_net_total" value="{{ item.line_net_total if item.line_net_total is not none else '' }}"></td>
+              <td><button type="button" class="remove-row" aria-label="Remove row">&times;</button></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <button type="button" id="add-row">+ Add item</button>
+      </fieldset>
+
+      <div class="actions">
+        <button type="submit" name="action" value="save">Save changes</button>
+        <button type="submit" name="action" value="finalize" class="primary">Save &amp; begin automation</button>
+      </div>
+    </form>
+  </main>
+
+  <script>
+    document.getElementById('add-row').addEventListener('click', () => {
+      const tbody = document.querySelector('#items-table tbody');
+      const row = document.createElement('tr');
+      const numeric = new Set(['item_quantity', 'item_unit_net_price', 'item_discount_pct', 'item_vat_pct', 'item_line_net_total']);
+      const fields = ['item_sku', 'item_description', 'item_quantity', 'item_unit',
+                       'item_unit_net_price', 'item_discount_pct', 'item_vat_pct', 'item_line_net_total'];
+      row.innerHTML = fields.map(f => {
+        const type = numeric.has(f) ? 'number' : 'text';
+        const step = type === 'number' ? ' step="any"' : '';
+        return `<td><input type="${type}"${step} name="${f}"></td>`;
+      }).join('') + '<td><button type="button" class="remove-row" aria-label="Remove row">&times;</button></td>';
+      tbody.appendChild(row);
+    });
+
+    document.querySelector('#items-table').addEventListener('click', (e) => {
+      if (e.target.classList.contains('remove-row')) {
+        e.target.closest('tr').remove();
+      }
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,512 @@
+"""Two-stage extraction pipeline:
+
+  1. run_ocr()               -- PaddleOCR-VL turns the order image into
+                                 layout-aware Markdown (tables stay tables,
+                                 key/value blocks stay grouped).
+  2. extract_order_fields()  -- an LLM call maps that Markdown onto our
+                                 fixed order schema, using forced tool-use
+                                 so the response is always valid JSON in
+                                 the shape we asked for.
+
+OCR backends:
+    OCR_PROVIDER=local
+        Runs PaddleOCR-VL-1.6 locally on CPU.
+
+    OCR_PROVIDER=huggingface
+        Sends the image to the Hugging Face PaddleOCR-VL-1.6
+        Online Demo Space. The model runs remotely, avoiding the
+        ~4 GB local GPU limitation and slow CPU inference.
+
+LLM providers:
+    LLM_PROVIDER=anthropic   (default) -- native Anthropic SDK
+    LLM_PROVIDER=groq                  -- OpenAI-compatible
+    LLM_PROVIDER=ollama                -- OpenAI-compatible, local
+    LLM_PROVIDER=openai                -- OpenAI-compatible
+
+Environment variables:
+
+    OCR_PROVIDER=local|huggingface
+
+    HF_OCR_SPACE=PaddlePaddle/PaddleOCR-VL-1.6_Online_Demo
+
+    LLM_PROVIDER=anthropic|groq|ollama|openai
+    EXTRACTION_MODEL=<optional override>
+
+    ANTHROPIC_API_KEY=<key>
+    GROQ_API_KEY=<key>
+    OPENAI_API_KEY=<key>
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from typing import Any
+
+from schema import ANTHROPIC_TOOL, OPENAI_TOOL, TOOL_NAME
+
+
+# ---------------------------------------------------------------------
+# OCR provider configuration
+# ---------------------------------------------------------------------
+
+OCR_PROVIDER = os.environ.get("OCR_PROVIDER", "local").lower()
+
+# Official PaddlePaddle Hugging Face Space running PaddleOCR-VL-1.6.
+HF_OCR_SPACE = os.environ.get(
+    "HF_OCR_SPACE",
+    "PaddlePaddle/PaddleOCR-VL-1.6_Online_Demo",
+)
+
+# Local PaddleOCR pipeline, created lazily.
+_pipeline = None
+
+# Hugging Face Gradio client, created lazily.
+_hf_client = None
+
+
+# ---------------------------------------------------------------------
+# Local PaddleOCR-VL
+# ---------------------------------------------------------------------
+
+def _get_pipeline():
+    """Return the cached local PaddleOCR-VL pipeline.
+
+    The local backend intentionally runs on CPU because the machine's
+    4 GB GPU does not have enough VRAM for PaddleOCR-VL-1.6.
+    """
+    global _pipeline
+
+    if _pipeline is None:
+        from paddleocr import PaddleOCRVL
+
+        _pipeline = PaddleOCRVL(
+            pipeline_version="v1.6",
+            device="cpu",
+        )
+
+    return _pipeline
+
+
+def _run_ocr_local(
+    image_path: str,
+    output_dir: Path,
+) -> str:
+    """Run PaddleOCR-VL locally and return its Markdown output."""
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    pipeline = _get_pipeline()
+    output = pipeline.predict(image_path)
+
+    for res in output:
+        res.save_to_json(save_path=str(output_dir))
+        res.save_to_markdown(save_path=str(output_dir))
+
+    md_files = sorted(output_dir.glob("*.md"))
+
+    if not md_files:
+        raise RuntimeError(
+            f"PaddleOCR-VL produced no Markdown output for {image_path!r}"
+        )
+
+    # Single image -> normally one Markdown file.
+    return md_files[-1].read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------
+# Hugging Face PaddleOCR-VL Space
+# ---------------------------------------------------------------------
+
+def _get_hf_client():
+    """Return a cached Hugging Face Gradio client."""
+
+    global _hf_client
+
+    if _hf_client is None:
+        from gradio_client import Client
+
+        hf_token = os.environ.get("HF_TOKEN")
+
+        if hf_token:
+            _hf_client = Client(
+                HF_OCR_SPACE,
+                token=hf_token,
+            )
+        else:
+            _hf_client = Client(HF_OCR_SPACE)
+
+    return _hf_client
+
+
+def _run_ocr_huggingface(
+    image_path: str,
+    output_dir: Path,
+) -> str:
+    """Run PaddleOCR-VL-1.6 using the Hugging Face hosted Space."""
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    client = _get_hf_client()
+
+    print(
+        f"Running PaddleOCR-VL-1.6 remotely via "
+        f"Hugging Face Space: {HF_OCR_SPACE}"
+    )
+
+    try:
+
+        from gradio_client import handle_file
+
+        result = client.predict(
+            handle_file(image_path),
+            False,  # chart parsing
+            False,  # document unwarping
+            False,  # orientation classification
+            api_name="/parse_doc",
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "Hugging Face PaddleOCR-VL request failed. "
+            f"Space={HF_OCR_SPACE!r}. "
+            f"Original error: {exc}"
+        ) from exc
+
+    if not isinstance(result, (tuple, list)):
+        raise RuntimeError(
+            "Unexpected response from Hugging Face "
+            "PaddleOCR-VL Space: "
+            f"{type(result).__name__}: {result!r}"
+        )
+
+    if len(result) < 3:
+        raise RuntimeError(
+            "Hugging Face PaddleOCR-VL Space returned an "
+            f"unexpected number of outputs: {len(result)}. "
+            f"Response: {result!r}"
+        )
+
+    # Current /parse_doc API:
+    #
+    #   result[0] -> Markdown preview
+    #   result[1] -> visualization HTML
+    #   result[2] -> raw Markdown
+    markdown_text = result[2]
+
+    # Be defensive in case the raw Markdown output is empty.
+    if not markdown_text:
+        markdown_text = result[0]
+
+    if not markdown_text:
+        raise RuntimeError(
+            f"Hugging Face PaddleOCR-VL produced no Markdown "
+            f"for {image_path!r}. Response: {result!r}"
+        )
+
+    markdown_text = str(markdown_text)
+
+    # Save Markdown just like the local backend does.
+    md_path = output_dir / f"{Path(image_path).stem}.md"
+    md_path.write_text(
+        markdown_text,
+        encoding="utf-8",
+    )
+
+    # Save a small audit JSON.
+    audit_path = output_dir / f"{Path(image_path).stem}.json"
+    audit_path.write_text(
+        json.dumps(
+            {
+                "ocr_provider": "huggingface",
+                "huggingface_space": HF_OCR_SPACE,
+                "source_image": str(image_path),
+                "markdown_file": md_path.name,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    return markdown_text
+
+
+# ---------------------------------------------------------------------
+# Public OCR entry point
+# ---------------------------------------------------------------------
+
+def run_ocr(
+    image_path: str,
+    output_dir: Path,
+) -> str:
+    """Run OCR using the configured OCR provider.
+
+    Args:
+        image_path:
+            Path to the order image.
+
+        output_dir:
+            Fresh, order-specific directory where OCR artifacts are
+            stored.
+
+    Returns:
+        PaddleOCR-VL Markdown representation of the document.
+
+    OCR_PROVIDER values:
+
+        local
+            Run PaddleOCR-VL locally on CPU.
+
+        huggingface
+            Run PaddleOCR-VL-1.6 through the Hugging Face Space.
+    """
+
+    provider = OCR_PROVIDER
+
+    if provider == "local":
+        return _run_ocr_local(
+            image_path=image_path,
+            output_dir=output_dir,
+        )
+
+    if provider in {"huggingface", "hf"}:
+        return _run_ocr_huggingface(
+            image_path=image_path,
+            output_dir=output_dir,
+        )
+
+    raise ValueError(
+        f"Unknown OCR_PROVIDER {provider!r}. "
+        "Choose 'local' or 'huggingface'."
+    )
+
+
+# ---------------------------------------------------------------------
+# LLM extraction prompt
+# ---------------------------------------------------------------------
+
+EXTRACTION_SYSTEM_PROMPT = """\
+You extract structured order data from a document that was already run \
+through an OCR/document-parsing model, so you're reading its Markdown \
+output rather than the original image.
+
+The Markdown includes at least one table of line items. Read it row by \
+row -- each row's SKU, description, quantity, unit price, discount, VAT \
+percentage and line total belong together as a single item. Do not mix \
+values across rows.
+
+If a field is not present in the document, or you cannot read it with \
+confidence, use null. Never invent or guess a plausible-looking value.
+"""
+
+
+# ---------------------------------------------------------------------
+# LLM provider configuration
+# ---------------------------------------------------------------------
+
+_PROVIDER_CONFIG: dict[str, dict[str, Any]] = {
+    "anthropic": {
+        "kind": "anthropic",
+        "default_model": "claude-haiku-4-5-20251001",
+    },
+    "groq": {
+        "kind": "openai_compatible",
+        "default_model": "openai/gpt-oss-20b",
+        "base_url": "https://api.groq.com/openai/v1",
+        "api_key_env": "GROQ_API_KEY",
+    },
+    "ollama": {
+        "kind": "openai_compatible",
+        "default_model": "llama3.2",
+        "base_url": "http://localhost:11434/v1",
+        "api_key_env": None,
+    },
+    "openai": {
+        "kind": "openai_compatible",
+        "default_model": "gpt-5.4-nano",
+        "base_url": None,
+        "api_key_env": "OPENAI_API_KEY",
+    },
+}
+
+
+# One cached client per provider.
+_clients: dict[str, Any] = {}
+
+
+# ---------------------------------------------------------------------
+# Anthropic
+# ---------------------------------------------------------------------
+
+def _get_anthropic_client():
+    if "anthropic" not in _clients:
+        import anthropic
+
+        _clients["anthropic"] = anthropic.Anthropic()
+
+    return _clients["anthropic"]
+
+
+def _extract_via_anthropic(
+    markdown_text: str,
+    model: str,
+) -> dict:
+    client = _get_anthropic_client()
+
+    message = client.messages.create(
+        model=model,
+        max_tokens=4096,
+        system=EXTRACTION_SYSTEM_PROMPT,
+        tools=[ANTHROPIC_TOOL],
+        tool_choice={
+            "type": "tool",
+            "name": TOOL_NAME,
+        },
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    "Parsed source document:\n\n"
+                    f"{markdown_text}"
+                ),
+            }
+        ],
+    )
+
+    for block in message.content:
+        if block.type == "tool_use":
+            return block.input
+
+    raise RuntimeError(
+        "Anthropic response did not include the expected tool call"
+    )
+
+
+# ---------------------------------------------------------------------
+# OpenAI-compatible providers
+# ---------------------------------------------------------------------
+
+def _get_openai_compatible_client(provider: str):
+    if provider not in _clients:
+        from openai import OpenAI
+
+        cfg = _PROVIDER_CONFIG[provider]
+
+        api_key_env = cfg["api_key_env"]
+
+        api_key = (
+            os.environ.get(api_key_env)
+            if api_key_env
+            else None
+        ) or "not-needed"
+
+        client_kwargs: dict[str, Any] = {
+            "api_key": api_key,
+        }
+
+        if cfg["base_url"]:
+            client_kwargs["base_url"] = cfg["base_url"]
+
+        _clients[provider] = OpenAI(**client_kwargs)
+
+    return _clients[provider]
+
+
+def _extract_via_openai_compatible(
+    markdown_text: str,
+    model: str,
+    provider: str,
+) -> dict:
+    client = _get_openai_compatible_client(provider)
+
+    response = client.chat.completions.create(
+        model=model,
+        max_completion_tokens=4096,
+        tools=[OPENAI_TOOL],
+        tool_choice={
+            "type": "function",
+            "function": {
+                "name": TOOL_NAME,
+            },
+        },
+        messages=[
+            {
+                "role": "system",
+                "content": EXTRACTION_SYSTEM_PROMPT,
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Parsed source document:\n\n"
+                    f"{markdown_text}"
+                ),
+            },
+        ],
+    )
+
+    tool_calls = (
+        response.choices[0].message.tool_calls
+        or []
+    )
+
+    for call in tool_calls:
+        if call.function.name == TOOL_NAME:
+            return json.loads(call.function.arguments)
+
+    raise RuntimeError(
+        f"{provider} response did not include the expected tool call"
+    )
+
+
+# ---------------------------------------------------------------------
+# Public structured extraction entry point
+# ---------------------------------------------------------------------
+
+def extract_order_fields(
+    markdown_text: str,
+    model: str | None = None,
+    provider: str | None = None,
+) -> dict:
+    """Map OCR Markdown onto the order schema via forced tool-use.
+
+    provider:
+        Defaults to LLM_PROVIDER, then "anthropic".
+
+    model:
+        Defaults to EXTRACTION_MODEL, then the provider's default.
+    """
+
+    provider = (
+        provider
+        or os.environ.get("LLM_PROVIDER")
+        or "anthropic"
+    ).lower()
+
+    cfg = _PROVIDER_CONFIG.get(provider)
+
+    if cfg is None:
+        raise ValueError(
+            f"Unknown LLM_PROVIDER {provider!r}; "
+            f"choose one of {sorted(_PROVIDER_CONFIG)}"
+        )
+
+    model = (
+        model
+        or os.environ.get("EXTRACTION_MODEL")
+        or cfg["default_model"]
+    )
+
+    if cfg["kind"] == "anthropic":
+        return _extract_via_anthropic(
+            markdown_text,
+            model,
+        )
+
+    return _extract_via_openai_compatible(
+        markdown_text,
+        model,
+        provider,
+    )
