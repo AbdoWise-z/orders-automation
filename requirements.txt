@@ -1,0 +1,36 @@
+# Fakturama order automation — all runtime dependencies.
+#   pip install -r requirements.txt
+#
+# Python 3.10+ (developed on 3.12). The web/extraction half runs anywhere;
+# the automation half is Windows-only (see the automation section below).
+
+# --- web app ---------------------------------------------------------------
+Flask>=3.0
+python-dotenv>=1.0            # loads .env; see README for the Windows-path gotcha
+
+# --- OCR providers (image -> document layout) ------------------------------
+gradio_client>=1.0            # OCR_PROVIDER=hf_public (the default)
+requests>=2.31                # OCR_PROVIDER=hf_private
+
+# OCR_PROVIDER=local is disabled on purpose: PaddleOCR's local runtime is a
+# very large install, and keeping it optional lets the app run without it.
+# To enable: uncomment below, then uncomment LocalOCRProvider in
+# providers/ocr/__init__.py and providers/ocr/factory.py.
+# paddleocr>=3.0
+# paddlepaddle>=3.0
+
+# --- LLM providers (layout -> order schema) --------------------------------
+anthropic>=0.40               # LLM_PROVIDER=anthropic (the default)
+openai>=1.40                  # LLM_PROVIDER=openai, and any OpenAI-compatible endpoint
+
+# --- desktop automation (Windows only) -------------------------------------
+# Skip these on a non-Windows box: extraction and review still work, only the
+# Fakturama automation is unavailable.
+uiautomation>=2.0.20; sys_platform == "win32"   # UI Automation wrapper
+comtypes>=1.2.0; sys_platform == "win32"        # uiautomation's COM layer
+
+# Fakturama's grids are canvases that expose no rows to UI Automation, so they
+# are read by screenshot + OCR. Needs the Tesseract *binary* as well — see the
+# README's setup section.
+pytesseract>=0.3.10; sys_platform == "win32"
+Pillow>=10.0; sys_platform == "win32"

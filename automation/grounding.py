@@ -1,25 +1,3 @@
-"""The grounding layer: the *only* module that imports ``uiautomation``.
-
-Why it exists
--------------
-Every flow describes *what* it wants ("the Edit labelled 'Street'", "the upper
-icon in the Addresses block") and this module resolves it to a live control.
-When SWT's tree surprises us, the fix lives here, not scattered across flows.
-
-Grounding contract for this app
--------------------------------
-* NEVER ground on numeric ``AutomationId``. In this SWT build the AutomationId
-  is just the window handle (e.g. Customer-ID edit ``0x20A34`` == 133684), which
-  is unstable across restarts and re-opened editors.
-* Prefer ``Name`` + ``ControlType``. SWT copies each field's label into the
-  accessible Name, so labelled fields (Street, Company, Cust.Ref., ...) are
-  reliable.
-* For unlabelled controls (No., Date, First/Last name, icons) anchor on the
-  nearest labelled ``Static`` and pick by geometry.
-* Last resort: physical click at a rect centre (for icons and NatTable cells)
-  and OCR of a screen region (for the invisible grids).
-"""
-
 from __future__ import annotations
 
 import logging

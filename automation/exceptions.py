@@ -1,28 +1,3 @@
-"""Exception hierarchy for the Fakturama automation.
-
-Design goals
-------------
-* Every failure carries a short, human-readable ``user_message`` the Flask layer
-  can show directly to the operator so they can fix things and retry.
-* ``ManualReviewRequired`` is the "stop for manual review" case from the design
-  doc. It is a *controlled* stop, not a crash: the automation did its job and
-  correctly decided a human must decide. The flow leaves Fakturama in a
-  consistent, inspectable state before raising it.
-* ``context`` is a plain, JSON-serialisable dict so it can be written onto the
-  order record and rendered on the status page.
-
-Call conventions (matches actual usage across ``automation/``)
-----------------------------------------------------------------
-* Most subclasses (``ControlNotFound``, ``AmbiguousMatch``, ``ValueNotApplied``,
-  ``FakturamaNotRunning``) use the base ``AutomationError`` signature: a single
-  positional ``message`` plus optional ``user_message``/``context``/``step``/
-  ``hint`` keywords.
-* ``hint`` is a developer-facing breadcrumb (e.g. "re-capture this dialog"),
-  kept separate from the operator-facing ``user_message``.
-* ``ManualReviewRequired`` and ``VerificationFailed`` take extra positional/
-  keyword shape — see their docstrings.
-"""
-
 from __future__ import annotations
 
 from typing import Any, Optional

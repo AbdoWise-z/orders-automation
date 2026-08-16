@@ -2,77 +2,193 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Automation · {{ order_id }}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-  <style>
-    .step { padding:.4rem .6rem; border-left:3px solid #ccc; margin:.3rem 0; }
-    .step.ok { border-color:#2e7d32; }
-    .badge { display:inline-block; padding:.1rem .5rem; border-radius:.4rem; font-size:.8rem; }
-    .badge.running { background:#e3f2fd; }
-    .badge.ok { background:#e8f5e9; }
-    .badge.manual_review { background:#fff8e1; }
-    .badge.error { background:#ffebee; }
-    .err { background:#fff5f5; border:1px solid #ffcdd2; padding:.75rem; border-radius:.5rem; }
-    pre { white-space:pre-wrap; }
-  </style>
 </head>
 <body>
-  <main class="container">
-    <p><a href="{{ url_for('review', order_id=order_id) }}">&larr; back to review</a></p>
-    <h1>Automation run
-      <span class="badge {{ automation.status }}">{{ automation.status }}</span>
+  <main class="container wide">
+    <p class="crumbs">
+      <a href="{{ url_for('index') }}">&larr; all orders</a>
+      <a href="{{ url_for('review', order_id=order_id) }}">review this order</a>
+      <a href="{{ url_for('download_order', order_id=order_id) }}">download JSON</a>
+    </p>
+
+    <h1>
+      Automation
+      <span class="badge" id="status-badge">{{ automation.status }}</span>
+      <span class="spinner inline" id="status-spinner" hidden></span>
     </h1>
+    <p class="subtitle mono">{{ order_id }}{% if order.debtor.company %} · {{ order.debtor.company }}{% endif %}</p>
 
-    <form method="post" action="{{ url_for('automation_run', order_id=order_id) }}">
-      <label>Run up to:
-        <select name="stop_after">
-          <option value="header">Header only</option>
-          <option value="debtor">+ Debtor</option>
-          <option value="product">+ Products</option>
-          <option value="order">+ Save Order</option>
-          <option value="invoice" selected>Full flow (Invoice)</option>
-        </select>
-      </label>
-      <button type="submit">Run automation</button>
-    </form>
+    {% set blockers = issues | selectattr('level', 'equalto', 'block') | list %}
+    {% set advisories = issues | selectattr('level', 'equalto', 'warn') | list %}
 
-    <h2>Steps</h2>
-    {% for s in automation.steps or [] %}
-      <div class="step {{ 'ok' if s.ok else '' }}">
-        {{ '✓' if s.ok else '•' }} {{ s.name }}
-        {% if s.elapsed %}<small>({{ s.elapsed }}s)</small>{% endif %}
-      </div>
-    {% else %}
-      <p><em>No steps yet.</em></p>
-    {% endfor %}
-
-    {% if automation.error %}
-      <h2>Needs attention</h2>
-      <div class="err">
-        <strong>{{ automation.error.error or 'Error' }}</strong>
-        {% if automation.error.step %}<span> — step {{ automation.error.step }}</span>{% endif %}
-        <p>{{ automation.error.message }}</p>
-        {% if automation.error.hint %}<p><em>Hint: {{ automation.error.hint }}</em></p>{% endif %}
-        {% if automation.error.expected is not none %}
-          <p>Expected: <code>{{ automation.error.expected }}</code>
-             {% if automation.error.actual is not none %} · Got: <code>{{ automation.error.actual }}</code>{% endif %}</p>
-        {% endif %}
-        {% if automation.error.context %}<pre>{{ automation.error.context }}</pre>{% endif %}
+    {% if blockers %}
+      <div class="err preflight">
+        <strong>{{ blockers | length }} problem(s) must be fixed before this can run</strong>
+        <ul>
+          {% for i in blockers %}<li><code>{{ i.field }}</code> — {{ i.message }}</li>{% endfor %}
+        </ul>
+        <p><a href="{{ url_for('review', order_id=order_id) }}">Fix them in review &rarr;</a></p>
       </div>
     {% endif %}
 
-    {% if automation.screenshot %}
-      <h2>Screenshot at failure</h2>
-      <p><code>{{ automation.screenshot }}</code></p>
+    {% if advisories %}
+      <details class="warn preflight">
+        <summary>{{ advisories | length }} thing(s) worth checking first</summary>
+        <ul>
+          {% for i in advisories %}<li><code>{{ i.field }}</code> — {{ i.message }}</li>{% endfor %}
+        </ul>
+      </details>
     {% endif %}
+
+    {% if busy %}
+      <div class="warn preflight">Another order is being automated right now —
+        desktop control is exclusive, so wait for it to finish.</div>
+    {% endif %}
+
+    <section class="card run-card">
+      <form method="post" action="{{ url_for('automation_run', order_id=order_id) }}"
+            id="run-form" class="run-form">
+        <label>Run up to
+          <select name="stop_after" id="stop-after">
+            <option value="header">Header only</option>
+            <option value="debtor">+ Debtor</option>
+            <option value="product">+ Products</option>
+            <option value="order">+ Save Order</option>
+            <option value="invoice" selected>Full flow (Invoice)</option>
+          </select>
+        </label>
+        <button type="submit" class="primary" id="run-button"
+                {% if blockers or busy %}disabled{% endif %}>Run automation</button>
+        <button type="button" id="doctor-button">Check grounding</button>
+      </form>
+      <p class="hint">
+        Automation drives the real mouse and keyboard — leave Fakturama visible
+        and don't use the machine while it runs.
+      </p>
+      <div id="doctor-out" class="doctor" hidden></div>
+    </section>
+
+    <div class="split">
+      <section>
+        <h2>Steps</h2>
+        <div id="steps"></div>
+      </section>
+
+      <section>
+        <h2>Needs attention</h2>
+        <div id="warnings"></div>
+        <div id="error"></div>
+      </section>
+    </div>
   </main>
 
   <script>
-    // Poll while running so the page updates without a manual refresh.
-    const status = {{ automation.status | tojson }};
-    if (status === "running") {
-      setTimeout(() => location.reload(), 2000);
+    const ORDER_ID = {{ order_id | tojson }};
+    const STATUS_URL = "{{ url_for('automation_status', order_id=order_id) }}?format=json";
+    const initial = {{ automation | tojson }};
+    // Blocking validation / another run in progress: the button stays disabled
+    // regardless of run status, so polling must not re-enable it.
+    const LOCKED = {{ (blockers | length > 0 or busy) | tojson }};
+
+    const el = (id) => document.getElementById(id);
+    const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
+      c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+    function render(a) {
+      const status = a.status || "idle";
+      const badge = el("status-badge");
+      badge.textContent = status.replace(/_/g, " ");
+      badge.className = "badge " + status;
+
+      const running = status === "running";
+      el("status-spinner").hidden = !running;
+      el("run-button").disabled = running || LOCKED;
+      el("run-button").textContent = running ? "Running…" : "Run automation";
+
+      // Steps
+      const steps = a.steps || [];
+      el("steps").innerHTML = steps.length
+        ? steps.map(s => `
+            <div class="step ${s.ok ? "ok" : "pending"}">
+              <span class="step-mark">${s.ok ? "✓" : "•"}</span>
+              <span class="step-name">${esc(s.name)}</span>
+              ${s.elapsed ? `<span class="step-time">${s.elapsed}s</span>` : ""}
+              ${s.detail ? `<div class="step-detail">${esc(s.detail)}</div>` : ""}
+            </div>`).join("")
+        : `<p class="empty">${running ? "Starting…" : "Not run yet."}</p>`;
+
+      // Warnings — checks that could not be confirmed, not failures.
+      const warnings = a.warnings || [];
+      el("warnings").innerHTML = warnings.length
+        ? `<div class="warn"><strong>Could not confirm ${warnings.length} item(s)</strong>
+             <ul>${warnings.map(w => `<li>${esc(w)}</li>`).join("")}</ul>
+             <p class="hint">These are usually unreadable on-screen text rather than
+             wrong data — worth a glance in Fakturama.</p></div>`
+        : "";
+
+      // Error
+      const e = a.error;
+      el("error").innerHTML = e
+        ? `<div class="err">
+             <strong>${esc(e.error || "Error")}</strong>
+             ${e.step ? `<span class="muted"> — ${esc(e.step)}</span>` : ""}
+             <p>${esc(e.user_message || e.message || "")}</p>
+             ${e.message && e.user_message && e.message !== e.user_message
+                ? `<p class="hint mono">${esc(e.message)}</p>` : ""}
+             ${e.hint ? `<p class="hint"><em>${esc(e.hint)}</em></p>` : ""}
+             ${e.context && Object.keys(e.context).length
+                ? `<details><summary>Details</summary><pre>${esc(JSON.stringify(e.context, null, 2))}</pre></details>` : ""}
+             ${a.screenshot ? `<p class="hint">Screenshot: <code>${esc(a.screenshot)}</code></p>` : ""}
+           </div>`
+        : (warnings.length ? "" : `<p class="empty">Nothing to review.</p>`);
+
+      return running;
     }
+
+    // Poll only while a run is active, and update in place rather than
+    // reloading — a full reload would throw away scroll position every 2s.
+    let timer = null;
+    async function poll() {
+      try {
+        const res = await fetch(STATUS_URL, { cache: "no-store" });
+        const data = await res.json();
+        if (!render(data)) { clearInterval(timer); timer = null; }
+      } catch (_) { /* keep polling; a transient failure isn't fatal */ }
+    }
+
+    if (render(initial) && !timer) timer = setInterval(poll, 1500);
+
+    el("run-form").addEventListener("submit", () => {
+      el("run-button").disabled = true;
+      el("run-button").textContent = "Starting…";
+    });
+
+    el("doctor-button").addEventListener("click", async (ev) => {
+      const btn = ev.currentTarget, out = el("doctor-out");
+      btn.disabled = true; btn.textContent = "Checking…";
+      out.hidden = false;
+      out.innerHTML = `<p class="hint">Probing Fakturama's controls…</p>`;
+      try {
+        const res = await fetch("{{ url_for('automation_doctor') }}", { method: "POST" });
+        const d = await res.json();
+        out.innerHTML = `
+          <p><strong>Fakturama running:</strong> ${d.running ? "yes" : "no"} ·
+             <strong>All checks pass:</strong> ${d.ok ? "yes" : "no"}</p>
+          ${(d.checks || []).map(c => `
+            <div class="step ${c.ok ? "ok" : "fail"}">
+              <span class="step-mark">${c.ok ? "✓" : "✕"}</span>
+              <span class="step-name">${esc(c.name)}</span>
+              <div class="step-detail">${esc(c.detail)}</div>
+            </div>`).join("")}`;
+      } catch (err) {
+        out.innerHTML = `<div class="err">Could not run the check: ${esc(err)}</div>`;
+      } finally {
+        btn.disabled = false; btn.textContent = "Check grounding";
+      }
+    });
   </script>
 </body>
 </html>

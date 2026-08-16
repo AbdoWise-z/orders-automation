@@ -11,10 +11,13 @@ from .hf_public import HuggingFacePublicOCRProvider
 def get_ocr_provider(
     provider: str | None = None,
 ) -> OCRProvider:
+    # Defaults to the hosted public Space: 'local' needs PaddleOCR's full
+    # (very large) runtime, so it stays opt-in and the out-of-the-box path
+    # requires no heavyweight install.
     provider = (
         provider
         or os.environ.get("OCR_PROVIDER")
-        or "local"
+        or "hf_public"
     ).lower()
 
     # if provider == "local":
@@ -29,7 +32,14 @@ def get_ocr_provider(
     if provider in {"hf_private", "private"}:
         return HuggingFacePrivateOCRProvider()
 
+    if provider == "local":
+        raise ValueError(
+            "OCR_PROVIDER='local' is disabled: it needs PaddleOCR's local "
+            "runtime, which is a very large install. Uncomment LocalOCRProvider "
+            "in providers/ocr/{__init__,factory}.py and install paddleocr to "
+            "enable it. Otherwise use hf_public or hf_private."
+        )
     raise ValueError(
-        f"Unknown OCR_PROVIDER {provider!r}. "
-        "Choose one of: local, hf_public, hf_private."
+        f"Unknown OCR_PROVIDER {provider!r}. Choose hf_public or hf_private "
+        f"(or enable 'local' — see providers/ocr/factory.py)."
     )

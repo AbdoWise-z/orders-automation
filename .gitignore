@@ -5,4 +5,4 @@ __pycache__/
 data/uploads/
 data/ocr_output/
 data/orders/
-data/automation_shots
+data/automation_shots/

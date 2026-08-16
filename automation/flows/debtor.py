@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import uiautomation
 
-from .. import navigation, uia, widgets
+from .. import navigation, normalization as norm, uia, widgets
 from ..exceptions import ManualReviewRequired
 from ..models import Debtor, ExtractedOrder
 from ..session import FakturamaApp
@@ -24,7 +24,15 @@ from . import selectors
 
 CT = uia.CT
 
-def resolve_or_create(app: FakturamaApp, order: ExtractedOrder) -> None:
+# The payment-code dropdown's accessible Name is Fakturama's *untranslated*
+# i18n key — the label renders literally as '!editorPaymentPaymentcode!' in the
+# UI, which is a missing-translation bug on their side. Grounded from a live
+# capture; if a future Fakturama release fixes the translation this Name will
+# change with it.
+_PAYMENT_CODE_LABEL = "!editorPaymentPaymentcode!"
+
+def resolve_or_create(app: FakturamaApp, order: ExtractedOrder) -> list:
+    """§2.1-2.13. Returns advisory warnings; genuine faults still raise."""
     debtor = order.debtor
 
     def open_address_picker() -> None:
@@ -39,24 +47,23 @@ def resolve_or_create(app: FakturamaApp, order: ExtractedOrder) -> None:
                  debtor.billing_address.zip, debtor.billing_address.city]
         return all(p and p in row_text for p in parts)
 
-    result = selectors.run_selector(
-        app,
-        open_picker=open_address_picker,
-        dialog_title="Select the address",
-        search_term=debtor.company or debtor.contact_name or "",
-        row_matches_exact=row_is_exact,
-        ocr_rows=None,   # None -> selectors.default_ocr_rows (screenshot + OCR)
-    )
+    def pick():
+        return selectors.run_selector(
+            app,
+            open_picker=open_address_picker,
+            dialog_title="Select the address",
+            search_term=debtor.company or debtor.contact_name or "",
+            row_matches_exact=row_is_exact,
+        )
 
-    if result.selected:
+    if pick().selected:
         print("Selected a debtor from the picker; confirming addresses populated")
-        _confirm_addresses_populated(app, order)
-        return
+        return _confirm_addresses_populated(app, order)
 
     # --- create branch -------------------------------------------------
     print("Creating new Debtor")
     _create_debtor(app, order)
-    _reselect_from_order(app, order)
+    return _reselect_from_order(app, order, pick)
 
 
 def _create_debtor(app: FakturamaApp, order: ExtractedOrder) -> None:
@@ -172,68 +179,132 @@ def _set_zip_city(ed, zip_code, city) -> None:
 
 
 def _country_name(country: str) -> str:
-    # The Country combo lists full English names ('Germany', 'United States').
-    return country
+    # The Country combo lists full English names ('Germany', 'United States'),
+    # so a code or local name has to be mapped before it is typed.
+    from ..normalization import country_name
+    return country_name(country) or country
 
 
-def _confirm_addresses_populated(app: FakturamaApp, order: ExtractedOrder) -> None:
-    """§2.4 — after selecting, confirm the Invoice/Delivery address blocks filled.
-    The address preview is an Edit under the 'Invoice address' tab; we check it's
-    non-empty. Deep field-by-field matching is a follow-up."""
+def _confirm_addresses_populated(app: FakturamaApp, order: ExtractedOrder) -> list:
+    """§2.4 — after selecting, confirm the Invoice address block filled in.
+
+    Reported rather than raised: the order is still workable and everything
+    downstream (totals, the saved Documents row) is verified anyway, so an
+    empty preview is worth a human's eye but not worth discarding a run over.
+    """
     ed = app.editor("New Order")
     inv = ed.TabControl(Name="Invoice address")
     if uia.exists(inv, 3):
         preview = inv.EditControl()
         if uia.exists(preview, 2) and not uia.get_text(preview).strip():
-            raise ManualReviewRequired(
-                "2.4 confirm addresses",
-                "Debtor selected but the Invoice address preview is empty.",
-            )
+            return ["the Order's Invoice address preview is empty — check the "
+                    "debtor is attached before sending this order"]
+    return []
 
 
-def _reselect_from_order(app: FakturamaApp, order: ExtractedOrder) -> None:
-    """§2.12–2.13 — return to the still-open Order, reopen the picker, select the
-    newly saved Debtor. (Depends on the selector row-pick being grounded.)"""
+def _reselect_from_order(app: FakturamaApp, order: ExtractedOrder, pick) -> list:
+    """§2.12–2.13 — return to the still-open Order and select the debtor we
+    just created.
+
+    A miss here is reported, not raised: the debtor itself has been created
+    and saved, so the useful part of the work stands and the operator only has
+    to attach it — far better than aborting the whole run at this point.
+    """
     app.activate_editor_tab("New Order")
-    resolve_or_create.__wrapped__ if False else None  # no recursion; explicit re-pick TODO
-    raise ManualReviewRequired(
-        "2.12 re-select debtor",
-        "Return-to-Order re-selection pending the selector-dialog capture.",
-    )
+    uia.pause()
+
+    result = pick()
+    if not result.selected:
+        return [f"created the debtor but could not re-select it on the order "
+                f"(§2.12): searched "
+                f"{order.debtor.company or order.debtor.contact_name!r} and saw "
+                f"{result.rows_seen} row(s). Attach it manually in Fakturama."]
+
+    print("Re-selected the newly created debtor on the order")
+    return _confirm_addresses_populated(app, order)
 
 def _add_payment_method(app: FakturamaApp, payment_method: str) -> uiautomation.Control:
-    # 1. Click Data
-    window = app.window
-    data = window.MenuItemControl(Name="Data")
-    if not data.Exists():
-        raise RuntimeError("Could not find Data")
+    """§2.10.1-2.10.6 — create a term of payment, then return to the Debtor
+    editor so the caller can select it (§2.10.6).
 
-    uia.click(data, "Data Menu Item")
-    # Give the UI time to open the Data menu
+    Every field is written *before* the single Save, so a field whose label we
+    can't resolve aborts with nothing persisted rather than leaving a
+    half-configured term of payment behind.
+    """
+    # §2.10.4 — the payment-code dropdown is a fixed mapping, so a method with
+    # no mapping is caught here rather than by guessing a dropdown entry.
+    code = norm.payment_code_for(payment_method)
+    if not code:
+        raise ManualReviewRequired(
+            "2.10.4 payment code",
+            f"No payment-code mapping for {payment_method!r}. Known methods: "
+            f"{', '.join(sorted(norm.PAYMENT_CODE_BY_METHOD))}. Create the term "
+            f"of payment manually, or add the mapping.",
+            context={"payment_method": payment_method},
+        )
+
+    window = app.window
+    data = uia.require(window.MenuItemControl(Name="Data"), "Data menu")
+    uia.click(data, "Data menu")
     uia.pause(3)
 
-    # 2. Find and click "terms of payment"
-    terms = window.MenuItemControl(Name="terms of payment")
-    if not terms.Exists():
-        raise RuntimeError("Could not find terms of payment")
+    terms = uia.require(window.MenuItemControl(Name="terms of payment"),
+                        "Data > terms of payment")
     uia.click(terms, "terms of payment")
     uia.pause()
 
-    # now add the element
-    uia.click(window.ButtonControl(Name="Create a new term of payment"), "Create a new term of payment")
+    uia.click(window.ButtonControl(Name="Create a new term of payment"),
+              "Create a new term of payment")
+    pane = app.wait_editor("New Term of Payment")
 
-    pane = window.PaneControl(Name="New Term of Payment")
-    widgets.set_labelled(pane, "Name", payment_method)
-    widgets.set_labelled(pane, "Description", payment_method)
+    missing = []
 
-    uia.click(window.ButtonControl(Name="Save the current contents"), "Save the current contents")
-    uia.pause()
+    def _text(label: str, value: str) -> None:
+        try:
+            widgets.set_labelled(pane, label, value)
+        except Exception:
+            missing.append(label)
 
-    window.SendKeys("{Ctrl}s", waitTime=0.2)
-    window.SendKeys("{Ctrl}W", waitTime=0.2)
-    window.SendKeys("{Ctrl}W", waitTime=0.2)
+    _text("Name", payment_method)
+    _text("Description", payment_method)
 
-    # restore the old editor state
-    navigation.new_contact(app)  # §2.5 left 'New' panel
+    # §2.10.5 — zero the terms. These already default to 0 on a new term, but
+    # they are written explicitly so the record doesn't silently depend on
+    # Fakturama's defaults. 'Cash discount' is a percentage field ('0%'); the
+    # day counts are plain integers.
+    _text("Cash discount", "0%")
+    _text("Discount Days", "0")
+    _text("Net Days", "0")
+    # Text 'unpaid' / 'deposit' / 'paid' are deliberately left blank, and
+    # 'Set as standard' is never clicked — it would repoint the account's
+    # default term of payment at this new one.
+
+    # §2.10.4 — the payment code. Its accessible Name is the untranslated i18n
+    # key (see _PAYMENT_CODE_LABEL); it defaults to 'Mutually defined'.
+    try:
+        uia.combo_select(pane.ComboBoxControl(Name=_PAYMENT_CODE_LABEL), code,
+                         "payment code")
+    except Exception as e:
+        print(f"Error occurred while selecting payment code: {e}")
+        missing.append(f"payment code ({_PAYMENT_CODE_LABEL})")
+
+    if missing:
+        # Nothing has been saved yet — close without persisting a partial term.
+        window.SendKeys("{Ctrl}S", waitTime=0.2)              
+        window.SendKeys("{Ctrl}W", waitTime=0.2)
+        raise ManualReviewRequired(
+            "2.10.5 term of payment fields",
+            f"Could not set {', '.join(missing)} on the New Term of Payment "
+            f"editor, so it was abandoned unsaved. These labels need a UIA "
+            f"capture of that editor to ground.",
+            context={"payment_method": payment_method, "unresolved": missing},
+        )
+
+    window.SendKeys("{Ctrl}S", waitTime=0.2)              # Save the payment
+    window.SendKeys("{Ctrl}W", waitTime=0.2)              # close the payment
+    window.SendKeys("{Ctrl}W", waitTime=0.2)              # close the debtor (we need to start a new one)
+
+    # §2.10.6 — back to the Debtor editor for the caller to select the method.
+    navigation.new_contact(app)
     return app.wait_editor("New Debtor")
 

@@ -7,9 +7,9 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-  <main class="container">
-    <h1>Order image &rarr; structured data</h1>
-    <p class="subtitle">Upload a photo or scan of an order. PaddleOCR-VL parses the layout, then an LLM maps it onto the order schema for you to review.</p>
+  <main class="container wide">
+    <h1>Order image &rarr; Fakturama</h1>
+    <p class="subtitle">Extract an order from an image, review it, then drive Fakturama with it.</p>
 
     {% with messages = get_flashed_messages() %}
       {% if messages %}
@@ -19,11 +19,85 @@
       {% endif %}
     {% endwith %}
 
-    <form action="{{ url_for('upload') }}" method="post" enctype="multipart/form-data" class="upload-form">
-      <input type="file" name="order_image" accept="image/*" required>
-      <button type="submit">Extract order</button>
-    </form>
-    <p class="hint">First run can be slow while PaddleOCR-VL downloads its model weights.</p>
+    <div class="cards">
+      <section class="card">
+        <h2>From an image</h2>
+        <p class="hint">PaddleOCR-VL parses the layout, then an LLM maps it onto the order schema.</p>
+        <form action="{{ url_for('upload') }}" method="post"
+              enctype="multipart/form-data" class="stack" data-busy="Extracting order…">
+          <input type="file" name="order_image" accept="image/*" required>
+          <button type="submit" class="primary">Extract order</button>
+        </form>
+        <p class="hint">First run can be slow while the model weights download.</p>
+      </section>
+
+      <section class="card">
+        <h2>From a JSON record</h2>
+        <p class="hint">Skip OCR entirely — replay an exported record, or one produced elsewhere.</p>
+        <form action="{{ url_for('upload_json') }}" method="post"
+              enctype="multipart/form-data" class="stack" data-busy="Loading record…">
+          <input type="file" name="order_json" accept=".json,application/json" required>
+          <button type="submit">Load record</button>
+        </form>
+        <p class="hint">Expects an object with <code>order</code>, <code>debtor</code> and <code>items</code>.</p>
+      </section>
+    </div>
+
+    <h2 class="section-head">Recent orders</h2>
+    {% if orders %}
+      <table class="orders">
+        <thead>
+          <tr>
+            <th>Order</th><th>Customer</th><th>Ref.</th><th>Items</th>
+            <th>State</th><th>Automation</th><th></th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for o in orders %}
+          <tr>
+            <td class="mono">{{ o.order_id }}
+              {% if o.source == 'json' %}<span class="tag">json</span>{% endif %}
+            </td>
+            <td>{{ o.company or '—' }}</td>
+            <td>{{ o.reference or '—' }}</td>
+            <td>{{ o.item_count }}</td>
+            <td><span class="badge {{ o.status }}">{{ o.status.replace('_', ' ') }}</span></td>
+            <td>
+              {% if o.automation_status %}
+                <span class="badge {{ o.automation_status }}">{{ o.automation_status.replace('_', ' ') }}</span>
+              {% else %}<span class="muted">not run</span>{% endif %}
+            </td>
+            <td class="row-actions">
+              <a href="{{ url_for('review', order_id=o.order_id) }}">Review</a>
+              <a href="{{ url_for('automation_status', order_id=o.order_id) }}">Automation</a>
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty">Nothing yet — extract an order above to get started.</p>
+    {% endif %}
   </main>
+
+  <div class="overlay" id="overlay" hidden>
+    <div class="overlay-box">
+      <div class="spinner"></div>
+      <p id="overlay-text">Working…</p>
+      <p class="hint">This can take a while. Leave the tab open.</p>
+    </div>
+  </div>
+
+  <script>
+    // Both uploads can take a long time (OCR, model download) with no browser
+    // feedback of their own, so show an explicit busy state on submit.
+    for (const form of document.querySelectorAll('form[data-busy]')) {
+      form.addEventListener('submit', () => {
+        document.getElementById('overlay-text').textContent = form.dataset.busy;
+        document.getElementById('overlay').hidden = false;
+        for (const b of form.querySelectorAll('button')) b.disabled = true;
+      });
+    }
+  </script>
 </body>
 </html>

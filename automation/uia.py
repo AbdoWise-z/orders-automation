@@ -252,7 +252,10 @@ def combo_values(ctrl: auto.Control, what: str = "") -> list[Any]:
 
     while item and item.Exists():
         if item.ControlTypeName == "ListItemControl":
-            options.append(item.Name)
+            # Stripped: several Fakturama dropdowns carry trailing whitespace
+            # on their entries ('Mutually defined '), and callers compare these
+            # against clean extracted values.
+            options.append((item.Name or "").strip())
 
         item = item.GetNextSiblingControl()
 
@@ -304,13 +307,24 @@ def combo_select(ctrl: auto.Control, value: str, what: str = "",
 
 
 def _select_by_click(ctrl: auto.Control, value: str) -> None:
-    """Expand, then physically click the matching item."""
+    """Expand, then physically click the matching item.
+
+    Items are matched on their *stripped* Name: Fakturama pads some dropdown
+    entries with trailing whitespace ('Mutually defined '), so an exact-Name
+    lookup silently finds nothing and the selection never happens.
+    """
+    wanted = (value or "").strip()
+
+    def same_label(c, _depth) -> bool:
+        return (c.Name or "").strip() == wanted
+
     ecp = ctrl.GetExpandCollapsePattern()
     ecp.Expand()
     pause()
-    item = ctrl.ListItemControl(Name=value)
+    item = ctrl.ListItemControl(Compare=same_label)
     if not exists(item, 2):
-        item = auto.ListItemControl(Name=value)   # popup may parent to the desktop
+        # the popup may parent to the desktop rather than the combo
+        item = auto.ListItemControl(Compare=same_label)
     if not exists(item, 2):
         try:
             ecp.Collapse()

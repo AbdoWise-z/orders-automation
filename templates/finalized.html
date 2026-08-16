@@ -8,11 +8,24 @@
 </head>
 <body>
   <main class="container">
-    <h1>Order saved</h1>
-    <p>Order <span class="mono">{{ order_id }}</span> is saved as JSON and marked <strong>ready_for_automation</strong>.</p>
-    <p class="hint">UI automation against Fakturama isn't wired up yet &mdash; this is the saved record it would consume next.</p>
-    <pre class="json-preview">{{ order | tojson(indent=2) }}</pre>
-    <a href="{{ url_for('index') }}">&larr; Extract another order</a>
+    <h1>Order ready</h1>
+    <p>Order <span class="mono">{{ order_id }}</span> is saved and marked
+       <span class="badge ready_for_automation">ready for automation</span></p>
+
+    <div class="actions">
+      <a class="button-link" href="{{ url_for('automation_status', order_id=order_id) }}">Run automation &rarr;</a>
+      <a class="button-link secondary" href="{{ url_for('download_order', order_id=order_id) }}">Download JSON</a>
+    </div>
+
+    <p class="hint">Automation drives the real mouse and keyboard. Have Fakturama
+       open and visible, and avoid using the machine while it runs.</p>
+
+    <details>
+      <summary>Record it will consume</summary>
+      <pre class="json-preview">{{ order | tojson(indent=2) }}</pre>
+    </details>
+
+    <p><a href="{{ url_for('index') }}">&larr; Back to all orders</a></p>
   </main>
 </body>
 </html>

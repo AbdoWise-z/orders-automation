@@ -7,8 +7,55 @@ python-dotenv, or your shell).
 from __future__ import annotations
 
 import os
+import shutil
 from dataclasses import dataclass
 from typing import Optional
+
+from dotenv import load_dotenv
+
+# Load .env here rather than relying on the importer to have done it first.
+# Settings are read at import time, so whichever module happens to be imported
+# first would otherwise decide whether .env was visible at all — which made
+# correctness depend on import order.
+load_dotenv()
+
+# python-dotenv expands backslash escapes, so a Windows path written plainly in
+# .env (TESSERACT_CMD=C:\...\tesseract.exe) arrives with a literal TAB where
+# '\t' was. Map the control characters back to the two-character sequences they
+# were written as.
+_ESCAPE_REPAIRS = {
+    "\t": r"\t", "\n": r"\n", "\r": r"\r",
+    "\b": r"\b", "\f": r"\f", "\v": r"\v", "\a": r"\a",
+}
+
+_TESSERACT_FALLBACKS = (
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+)
+
+
+def _repair_escapes(path: str) -> str:
+    for control, literal in _ESCAPE_REPAIRS.items():
+        path = path.replace(control, literal)
+    return path
+
+
+def _resolve_tesseract() -> Optional[str]:
+    """First path that actually exists: the configured one, the same with
+    escape damage repaired, the standard install locations, then PATH."""
+    configured = os.environ.get("TESSERACT_CMD")
+    candidates = []
+    if configured:
+        candidates += [configured, _repair_escapes(configured)]
+    candidates += list(_TESSERACT_FALLBACKS)
+
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            if configured and candidate != configured:
+                print(f"[config] TESSERACT_CMD={configured!r} does not exist; "
+                      f"using {candidate!r} instead")
+            return candidate
+    return shutil.which("tesseract")
 
 
 def _f(name: str, default: float) -> float:
@@ -50,9 +97,10 @@ class Settings:
     screenshot_dir: str = os.environ.get("UIA_SHOT_DIR", "data/automation_shots")
 
     # --- OCR (NatTable row reads in selector dialogs) --------------------
-    # Tesseract isn't always on PATH on a fresh Windows box; point at the
-    # binary explicitly if needed (e.g. C:\Program Files\Tesseract-OCR\tesseract.exe).
-    tesseract_cmd: Optional[str] = os.environ.get("TESSERACT_CMD", "C:\\Program Files\\Tesseract-OCR\\tesseract.exe")
+    # Resolved to a path that exists, so a mistyped or escape-mangled
+    # TESSERACT_CMD degrades to the standard install location instead of
+    # failing at the first OCR call.
+    tesseract_cmd: Optional[str] = _resolve_tesseract()
 
 
 SETTINGS = Settings()

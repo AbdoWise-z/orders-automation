@@ -10,10 +10,12 @@ rather than pretending to finish.
 """
 from __future__ import annotations
 
+import copy
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+from . import normalization, validation
 from .exceptions import AutomationError, ManualReviewRequired
 from .flows import debtor as debtor_flow
 from .flows import invoice as invoice_flow
@@ -33,9 +35,10 @@ class StepLog:
 
 @dataclass
 class RunResult:
-    status: str = "running"           # running | ok | manual_review | error
+    status: str = "running"   # running | ok | manual_review | error | invalid
     steps: list[StepLog] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    issues: list[dict] = field(default_factory=list)   # pre-flight validation
     error: Optional[dict] = None
     screenshot: Optional[str] = None
 
@@ -44,6 +47,7 @@ class RunResult:
             "status": self.status,
             "steps": [s.__dict__ for s in self.steps],
             "warnings": self.warnings,
+            "issues": self.issues,
             "error": self.error,
             "screenshot": self.screenshot,
         }
@@ -53,6 +57,29 @@ def run_automation(record: dict, stop_after: str = "invoice") -> RunResult:
     """stop_after ∈ {'header', 'debtor', 'product', 'order', 'invoice'} lets the
     Flask UI run just part of the pipeline while we build it out."""
     result = RunResult()
+
+    # Normalise, then refuse to start on anything blocking. Every one of these
+    # would otherwise surface mid-run, leaving Fakturama holding a half-built
+    # order that has to be unwound by hand.
+    record = copy.deepcopy(record)
+    for change in normalization.normalize_record(record):
+        result.warnings.append(f"normalised {change}")
+    issues = validation.validate(record)
+    result.issues = [i.to_dict() for i in issues]
+    blockers = validation.blocking(issues)
+    if blockers:
+        result.status = "invalid"
+        result.error = {
+            "error": "ValidationFailed",
+            "message": "; ".join(i.message for i in blockers),
+            "user_message": (f"This order can't be automated yet — "
+                             f"{len(blockers)} problem(s) need fixing first."),
+            "context": {"issues": [i.to_dict() for i in blockers]},
+        }
+        return result
+    result.warnings.extend(f"{i.field}: {i.message}"
+                           for i in issues if i.level == "warn")
+
     order = ExtractedOrder.from_dict(record)
 
     try:
