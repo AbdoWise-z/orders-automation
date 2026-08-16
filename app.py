@@ -7,8 +7,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 from flask import Flask, flash, redirect, render_template, request, url_for
 
-from extraction import extract_order_fields, run_ocr
-from schema import empty_order
+from extraction.extraction import extract_order_fields, run_ocr
+from extraction.schema import empty_order
 
 load_dotenv()
 
@@ -174,6 +174,9 @@ def finalized(order_id):
     data = load_order(order_id)
     return render_template("finalized.html", order=data, order_id=order_id)
 
+
+from automation.automation_web import register_automation_routes
+register_automation_routes(app, ORDERS_DIR, load_order, save_order)
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)

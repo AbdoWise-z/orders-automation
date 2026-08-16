@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Automation · {{ order_id }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <style>
+    .step { padding:.4rem .6rem; border-left:3px solid #ccc; margin:.3rem 0; }
+    .step.ok { border-color:#2e7d32; }
+    .badge { display:inline-block; padding:.1rem .5rem; border-radius:.4rem; font-size:.8rem; }
+    .badge.running { background:#e3f2fd; }
+    .badge.ok { background:#e8f5e9; }
+    .badge.manual_review { background:#fff8e1; }
+    .badge.error { background:#ffebee; }
+    .err { background:#fff5f5; border:1px solid #ffcdd2; padding:.75rem; border-radius:.5rem; }
+    pre { white-space:pre-wrap; }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <p><a href="{{ url_for('review', order_id=order_id) }}">&larr; back to review</a></p>
+    <h1>Automation run
+      <span class="badge {{ automation.status }}">{{ automation.status }}</span>
+    </h1>
+
+    <form method="post" action="{{ url_for('automation_run', order_id=order_id) }}">
+      <label>Run up to:
+        <select name="stop_after">
+          <option value="header">Header only</option>
+          <option value="debtor">+ Debtor</option>
+          <option value="product">+ Products</option>
+          <option value="order">+ Save Order</option>
+          <option value="invoice" selected>Full flow (Invoice)</option>
+        </select>
+      </label>
+      <button type="submit">Run automation</button>
+    </form>
+
+    <h2>Steps</h2>
+    {% for s in automation.steps or [] %}
+      <div class="step {{ 'ok' if s.ok else '' }}">
+        {{ '✓' if s.ok else '•' }} {{ s.name }}
+        {% if s.elapsed %}<small>({{ s.elapsed }}s)</small>{% endif %}
+      </div>
+    {% else %}
+      <p><em>No steps yet.</em></p>
+    {% endfor %}
+
+    {% if automation.error %}
+      <h2>Needs attention</h2>
+      <div class="err">
+        <strong>{{ automation.error.error or 'Error' }}</strong>
+        {% if automation.error.step %}<span> — step {{ automation.error.step }}</span>{% endif %}
+        <p>{{ automation.error.message }}</p>
+        {% if automation.error.hint %}<p><em>Hint: {{ automation.error.hint }}</em></p>{% endif %}
+        {% if automation.error.expected is not none %}
+          <p>Expected: <code>{{ automation.error.expected }}</code>
+             {% if automation.error.actual is not none %} · Got: <code>{{ automation.error.actual }}</code>{% endif %}</p>
+        {% endif %}
+        {% if automation.error.context %}<pre>{{ automation.error.context }}</pre>{% endif %}
+      </div>
+    {% endif %}
+
+    {% if automation.screenshot %}
+      <h2>Screenshot at failure</h2>
+      <p><code>{{ automation.screenshot }}</code></p>
+    {% endif %}
+  </main>
+
+  <script>
+    // Poll while running so the page updates without a manual refresh.
+    const status = {{ automation.status | tojson }};
+    if (status === "running") {
+      setTimeout(() => location.reload(), 2000);
+    }
+  </script>
+</body>
+</html>

@@ -10,6 +10,17 @@ Design goals
   consistent, inspectable state before raising it.
 * ``context`` is a plain, JSON-serialisable dict so it can be written onto the
   order record and rendered on the status page.
+
+Call conventions (matches actual usage across ``automation/``)
+----------------------------------------------------------------
+* Most subclasses (``ControlNotFound``, ``AmbiguousMatch``, ``ValueNotApplied``,
+  ``FakturamaNotRunning``) use the base ``AutomationError`` signature: a single
+  positional ``message`` plus optional ``user_message``/``context``/``step``/
+  ``hint`` keywords.
+* ``hint`` is a developer-facing breadcrumb (e.g. "re-capture this dialog"),
+  kept separate from the operator-facing ``user_message``.
+* ``ManualReviewRequired`` and ``VerificationFailed`` take extra positional/
+  keyword shape — see their docstrings.
 """
 
 from __future__ import annotations
@@ -29,20 +40,25 @@ class AutomationError(Exception):
         user_message: Optional[str] = None,
         context: Optional[dict[str, Any]] = None,
         step: Optional[str] = None,
+        hint: Optional[str] = None,
     ) -> None:
         super().__init__(message)
         self.user_message = user_message or self.default_user_message
         self.context = context or {}
         self.step = step
+        self.hint = hint
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "error": type(self).__name__,
             "message": str(self),
             "user_message": self.user_message,
             "step": self.step,
             "context": self.context,
         }
+        if self.hint:
+            d["hint"] = self.hint
+        return d
 
 
 class FakturamaNotRunning(AutomationError):
@@ -77,9 +93,34 @@ class ValueNotApplied(AutomationError):
 
 
 class VerificationFailed(AutomationError):
-    """A post-condition (totals, saved row, copied fields) did not hold."""
+    """A post-condition (totals, saved row, copied fields) did not hold.
+
+    Accepts optional ``expected``/``actual`` values (e.g. computed totals vs.
+    what the UI reads back); when given, they're folded into ``context`` so
+    they show up on the status page without every caller building that dict
+    by hand.
+    """
 
     default_user_message = "A saved record did not match what was expected."
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        expected: Any = None,
+        actual: Any = None,
+        user_message: Optional[str] = None,
+        context: Optional[dict[str, Any]] = None,
+        step: Optional[str] = None,
+    ) -> None:
+        merged_context = dict(context or {})
+        if expected is not None:
+            merged_context.setdefault("expected", expected)
+        if actual is not None:
+            merged_context.setdefault("actual", actual)
+        super().__init__(message, user_message=user_message, context=merged_context, step=step)
+        self.expected = expected
+        self.actual = actual
 
 
 class ManualReviewRequired(AutomationError):
@@ -87,16 +128,21 @@ class ManualReviewRequired(AutomationError):
 
     Raised for ambiguous/conflicting master-data matches, a missing payment
     method on the invoice, a product that will not appear after creation, etc.
+
+    Every call site names the workflow step it stopped at plus a human-readable
+    reason, e.g. ``ManualReviewRequired("2.4 confirm addresses", "Debtor
+    selected but the Invoice address preview is empty.")`` — so both are
+    required positionals here, matching how every flow module raises it.
     """
 
     default_user_message = "This order needs manual review before it can be completed."
 
     def __init__(
         self,
+        step: str,
         reason: str,
         *,
         context: Optional[dict[str, Any]] = None,
-        step: Optional[str] = None,
     ) -> None:
         super().__init__(reason, user_message=reason, context=context, step=step)
         self.reason = reason

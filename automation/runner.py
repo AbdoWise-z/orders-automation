@@ -35,6 +35,7 @@ class StepLog:
 class RunResult:
     status: str = "running"           # running | ok | manual_review | error
     steps: list[StepLog] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
     error: Optional[dict] = None
     screenshot: Optional[str] = None
 
@@ -42,6 +43,7 @@ class RunResult:
         return {
             "status": self.status,
             "steps": [s.__dict__ for s in self.steps],
+            "warnings": self.warnings,
             "error": self.error,
             "screenshot": self.screenshot,
         }
@@ -72,15 +74,29 @@ def run_automation(record: dict, stop_after: str = "invoice") -> RunResult:
         if stop_after == "product":
             return _finish(result, app)
 
+        # Re-apply the header last: selecting a Debtor re-applies that
+        # contact's defaults to the document and has been seen reverting the
+        # Date, flipping the price mode to Gross and clearing Cust.Ref.
+        _run(result, "Re-apply header before save",
+             lambda: order_flow.set_header(app, order))
+        _run(result, "Confirm Discount/Shipping defaults",
+             lambda: order_flow.verify_order_defaults(app))
         _run(result, "Verify totals", lambda: order_flow.verify_totals(app, order))
-        _run(result, "Save Order", lambda: order_flow.save_order(app))
+
+        # save_order returns the number the editor is renamed to; every later
+        # step addresses the editor by it ('New Order' stops resolving).
+        saved: dict = {}
+        _run(result, "Save Order",
+             lambda: saved.update(no=order_flow.save_order(app)))
+        _run(result, "Confirm saved Order in Documents",
+             lambda: order_flow.verify_in_documents(app, order, saved["no"]))
         if stop_after == "order":
             return _finish(result, app)
 
         _run(result, "Open follow-up Invoice",
-             lambda: order_flow.open_followup_invoice(app))
+             lambda: order_flow.open_followup_invoice(app, saved["no"]))
         _run(result, "Complete + verify Invoice",
-             lambda: invoice_flow.complete_and_verify(app, order))
+             lambda: invoice_flow.complete_and_verify(app, order, saved["no"]))
 
         return _finish(result, app)
 
@@ -100,10 +116,21 @@ def run_automation(record: dict, stop_after: str = "invoice") -> RunResult:
     return result
 
 
-def _run(result: RunResult, name: str, fn: Callable[[], None]) -> None:
+def _run(result: RunResult, name: str, fn: Callable[[], object]) -> None:
+    """Run one step. A step may return a list of advisory warnings — checks
+    that could not be *confirmed* but are not grounds to fail the run (the
+    post-save Documents read, whose OCR of that grid is unreliable). They are
+    recorded for the operator instead of aborting."""
     t0 = time.time()
-    fn()
-    result.steps.append(StepLog(name, True, elapsed=round(time.time() - t0, 2)))
+    out = fn()
+    warnings = out if isinstance(out, list) else []
+    if warnings:
+        result.warnings.extend(f"{name}: {w}" for w in warnings)
+        for w in warnings:
+            print(f"[warn] {name}: {w}")
+    result.steps.append(StepLog(
+        name, True, detail="; ".join(warnings), elapsed=round(time.time() - t0, 2),
+    ))
 
 
 def _finish(result: RunResult, app: FakturamaApp) -> RunResult:

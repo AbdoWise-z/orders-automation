@@ -128,6 +128,11 @@ class LineItem:
     def expected_line_total(self) -> Decimal:
         return norm.line_net_total(self.quantity, self.unit_net_price, self.discount_pct)
 
+    @property
+    def vat_name(self) -> str:
+        """Fakturama VAT record name to look up/create (step 3.6), e.g. 'VAT 19%'."""
+        return norm.vat_name(self.vat_pct)
+
     def line_total_matches_source(self) -> bool:
         """Cross-check the computed line total against the extracted source
         total, if the source supplied one."""
@@ -181,3 +186,18 @@ class ExtractedOrder:
     @property
     def expected_total_net(self) -> Decimal:
         return norm.round2(sum((it.expected_line_total for it in self.items), Decimal(0)))
+
+    @property
+    def expected_total_vat(self) -> Decimal:
+        """VAT summed per line (matching how Fakturama totals a document)
+        rather than applied once to the net total, so mixed VAT rates and
+        per-line rounding agree with the UI."""
+        return norm.round2(sum(
+            (norm.round2(it.expected_line_total * (it.vat_pct or Decimal(0)) / Decimal(100))
+             for it in self.items),
+            Decimal(0),
+        ))
+
+    @property
+    def expected_total_gross(self) -> Decimal:
+        return norm.round2(self.expected_total_net + self.expected_total_vat)

@@ -7,7 +7,7 @@
       <excludeFolder url="file://$MODULE_DIR$/data/orders" />
       <excludeFolder url="file://$MODULE_DIR$/data/uploads" />
     </content>
-    <orderEntry type="jdk" jdkName="Python 3.12 (orders-automation)" jdkType="Python SDK" />
+    <orderEntry type="jdk" jdkName="C:\Program Files\Python312\python.exe" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>
 </module>

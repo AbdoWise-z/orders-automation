@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import Optional
 
 
 def _f(name: str, default: float) -> float:
@@ -47,6 +48,11 @@ class Settings:
 
     # --- artifacts ------------------------------------------------------
     screenshot_dir: str = os.environ.get("UIA_SHOT_DIR", "data/automation_shots")
+
+    # --- OCR (NatTable row reads in selector dialogs) --------------------
+    # Tesseract isn't always on PATH on a fresh Windows box; point at the
+    # binary explicitly if needed (e.g. C:\Program Files\Tesseract-OCR\tesseract.exe).
+    tesseract_cmd: Optional[str] = os.environ.get("TESSERACT_CMD", "C:\\Program Files\\Tesseract-OCR\\tesseract.exe")
 
 
 SETTINGS = Settings()

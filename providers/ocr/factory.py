@@ -5,7 +5,7 @@ import os
 from .base import OCRProvider
 from .hf_private import HuggingFacePrivateOCRProvider
 from .hf_public import HuggingFacePublicOCRProvider
-from .local import LocalOCRProvider
+# from .local import LocalOCRProvider
 
 
 def get_ocr_provider(
@@ -17,11 +17,11 @@ def get_ocr_provider(
         or "local"
     ).lower()
 
-    if provider == "local":
-        return LocalOCRProvider(
-            pipeline_version="v1.6",
-            device="cpu",
-        )
+    # if provider == "local":
+    #     return LocalOCRProvider(
+    #         pipeline_version="v1.6",
+    #         device="cpu",
+    #     )
 
     if provider in {"hf_public", "huggingface", "hf"}:
         return HuggingFacePublicOCRProvider()

@@ -17,12 +17,12 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Callable, Optional
+from typing import Callable, Optional, Any
 
 import uiautomation as auto
 
 from .config import SETTINGS
-from .exceptions import ControlNotFound
+from .exceptions import ControlNotFound, ValueNotApplied
 
 auto.SetGlobalSearchTimeout(SETTINGS.search_timeout)
 
@@ -229,42 +229,132 @@ def combo_value(ctrl: auto.Control) -> str:
     except Exception:
         return ""
 
+def combo_values(ctrl: auto.Control, what: str = "") -> list[Any]:
+    require(ctrl, what or "combo")
 
-def combo_select(ctrl: auto.Control, value: str, what: str = "") -> None:
-    """Best-effort combo selection. Expands, then clicks the matching ListItem.
+    pattern = ctrl.GetExpandCollapsePattern()
+    if pattern is None:
+        return []
 
-    NOTE: Fakturama mixes native Windows combos (ClassName 'ComboBox') and SWT
-    CCombos (ClassName 'SWT_Window0'). This path is validated for the native
-    ones (Country/Salutation/payment-code). SWT CCombo popups render into a
-    transient window; if selection fails here we type the value + Enter as a
-    fallback. Re-test each combo as we reach it.
+    pattern.Expand()
+    pause()
+
+    root = auto.GetRootControl()
+
+    # Find the first ListItemControl anywhere in the UIA tree
+    item = root.ListItemControl()
+
+    if not item.Exists():
+        pattern.Collapse()
+        return []
+
+    options = []
+
+    while item and item.Exists():
+        if item.ControlTypeName == "ListItemControl":
+            options.append(item.Name)
+
+        item = item.GetNextSiblingControl()
+
+    pattern.Collapse()
+
+    return options
+
+def combo_select(ctrl: auto.Control, value: str, what: str = "",
+                 commit: bool = True) -> None:
+    """Combo selection, by real input events and verified by read-back.
+
+    Follows the same rule as ``set_text``: drive SWT/JFace widgets with real
+    input, never with UIA patterns. Specifically:
+
+    * the item is **physically clicked**, not ``SelectionItemPattern.Select()``
+      — a pattern-level select can update what the combo *displays* while the
+      bound model keeps its old value, so the read-back then "passes" against
+      a value that was never committed (this is how an order verified as
+      'Net' still saved as 'Gross');
+    * the popup is **not** collapsed after a successful pick — the click has
+      already closed it, and an extra collapse can cancel the selection;
+    * focus is moved off afterwards, because these widgets commit their bound
+      value on focus-out.
+
+    Fakturama mixes native Windows combos (ClassName 'ComboBox') with SWT
+    CCombos whose popups render outside the combo's own subtree, so the item
+    is looked for in both places, with a type-ahead fallback for popups that
+    aren't in the UIA tree at all.
     """
     require(ctrl, what or "combo")
-    try:
-        ecp = ctrl.GetExpandCollapsePattern()
-        ecp.Expand()
-        pause()
-        item = ctrl.ListItemControl(Name=value)
-        if not exists(item, 2):
-            item = auto.ListItemControl(Name=value)  # popup may parent to desktop
-            ecp.Collapse()
-        if exists(item, 2):
-            try:
-                item.GetSelectionItemPattern().Select()
-            except Exception:
-                item.Click()
-            pause()
-            ecp.Collapse()
+    if _combo_matches(ctrl, value):
+        return
+
+    for attempt in (_select_by_click, _select_by_typing):
+        try:
+            attempt(ctrl, value)
+        except Exception:
+            pass
+        if _combo_matches(ctrl, value):
+            if commit:
+                _commit_combo(ctrl)
             return
+
+    raise ValueNotApplied(
+        f"Combo {what or 'combo'} did not switch to {value!r}; reads {combo_value(ctrl)!r}",
+        user_message=f"“{what or 'The dropdown'}” did not switch to “{value}”.",
+        context={"expected": value, "actual": combo_value(ctrl)},
+    )
+
+
+def _select_by_click(ctrl: auto.Control, value: str) -> None:
+    """Expand, then physically click the matching item."""
+    ecp = ctrl.GetExpandCollapsePattern()
+    ecp.Expand()
+    pause()
+    item = ctrl.ListItemControl(Name=value)
+    if not exists(item, 2):
+        item = auto.ListItemControl(Name=value)   # popup may parent to the desktop
+    if not exists(item, 2):
+        try:
+            ecp.Collapse()
+        except Exception:
+            pass
+        raise ControlNotFound(f"combo option {value!r}")
+    r = item.BoundingRectangle
+    auto.Click((r.left + r.right) // 2, (r.top + r.bottom) // 2)
+    pause()
+
+
+def _select_by_typing(ctrl: auto.Control, value: str) -> None:
+    """Open with Alt+Down and type the value: type-ahead selects it in a
+    read-only combo, and it lands as text in an editable one (Country)."""
+    ctrl.SetFocus()
+    pause(0.5)
+    ctrl.SendKeys("{Alt}{Down}", waitTime=0.05)
+    pause(0.5)
+    ctrl.SendKeys(_escape_keys(value), waitTime=0.05)
+    pause(0.3)
+    ctrl.SendKeys("{Enter}", waitTime=0.05)
+    pause()
+
+
+def _commit_combo(ctrl: auto.Control) -> None:
+    """Move focus off so the widget's bound value is committed."""
+    try:
+        ctrl.SendKeys("{Tab}", waitTime=0.05)
+        pause()
     except Exception:
         pass
-    # fallback: type + Enter (works for editable combos like Country)
-    ctrl.SetFocus()
-    ctrl.SendKeys("{Ctrl}a", waitTime=0.02)
-    auto.SetClipboardText(value)
-    ctrl.SendKeys("{Ctrl}v", waitTime=0.02)
-    ctrl.SendKeys("{Enter}", waitTime=0.02)
-    pause()
+
+
+def _combo_matches(ctrl: auto.Control, value: str) -> bool:
+    return combo_value(ctrl).strip() == (value or "").strip()
+
+
+_SENDKEYS_SPECIAL = set("{}()+^%~#")
+
+
+def _escape_keys(text: str) -> str:
+    """Escape characters SendKeys treats as modifiers/grouping, so a value
+    like 'VAT 19%' types literally instead of being parsed."""
+    return "".join("{" + ch + "}" if ch in _SENDKEYS_SPECIAL else ch for ch in text)
 
 
 # --------------------------------------------------------------------------- #

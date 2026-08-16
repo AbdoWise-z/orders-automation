@@ -29,16 +29,3 @@ def new_contact(app: FakturamaApp) -> None:
 
 def new_product(app: FakturamaApp) -> None:
     widgets.click_link(app.window, "Create a new product")
-    
-
-# -- left category list (equivalent to the Data > ... menu entries) --------
-def open_documents(app: FakturamaApp) -> None:
-    widgets.click_link(app.window, "Documents")
-
-
-def open_vats(app: FakturamaApp) -> None:
-    widgets.click_link(app.window, "VATs")
-
-
-def open_terms_of_payment(app: FakturamaApp) -> None:
-    widgets.click_link(app.window, "terms of payment")

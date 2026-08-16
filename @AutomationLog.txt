@@ -1,0 +1,6 @@
+2026-08-15 18:58:27.775 pythonrc.py[24] my_displayhook -> Find Control Timeout(12.0s): {ControlType: ListControl}
+2026-08-15 19:35:44.687 uia.py[72] of_type -> Find Control Timeout(12.0s): {Name: 'First Name Last Name', ControlType: TextControl}
+2026-08-15 19:37:10.879 <stdin>[1] <module> -> Find Control Timeout(12.0s): {Name: 'First Name Last Name', ControlType: TextControl}
+2026-08-15 19:39:32.583 <stdin>[1] <module> -> Find Control Timeout(12.0s): {Name: 'First Name Last Name', ControlType: TextControl}
+2026-08-15 20:45:06.463 <stdin>[1] <module> -> Find Control Timeout(12.0s): {Name: 'terms of payment', ControlType: TextControl}
+2026-08-15 21:20:50.934 uia.py[233] combo_values -> Find Control Timeout(12.0s): {Name: 'Net or Gross', ControlType: ComboBoxControl}

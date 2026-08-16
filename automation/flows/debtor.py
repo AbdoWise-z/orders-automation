@@ -14,6 +14,8 @@ Debtor editor, then return to the Order and re-select (§2.12).
 """
 from __future__ import annotations
 
+import uiautomation
+
 from .. import navigation, uia, widgets
 from ..exceptions import ManualReviewRequired
 from ..models import Debtor, ExtractedOrder
@@ -21,7 +23,6 @@ from ..session import FakturamaApp
 from . import selectors
 
 CT = uia.CT
-
 
 def resolve_or_create(app: FakturamaApp, order: ExtractedOrder) -> None:
     debtor = order.debtor
@@ -44,7 +45,7 @@ def resolve_or_create(app: FakturamaApp, order: ExtractedOrder) -> None:
         dialog_title="Select the address",
         search_term=debtor.company or debtor.contact_name or "",
         row_matches_exact=row_is_exact,
-        ocr_rows=None,   # wire OCR fallback once the dialog is captured
+        ocr_rows=None,   # None -> selectors.default_ocr_rows (screenshot + OCR)
     )
 
     if result.selected:
@@ -64,11 +65,34 @@ def _create_debtor(app: FakturamaApp, order: ExtractedOrder) -> None:
     
     debtor = order.debtor
     navigation.new_contact(app)              # §2.5 left 'New' panel
-    print("awaiting editor")
     ed = app.wait_editor("New Debtor")
 
-    # 1. Addresses 
+    # 1. Payment method
+    uia.click(ed.TabItemControl(Name="Miscellaneous"), "Miscellaneous tab")
+    uia.pause()
+
+    payment = ed.ComboBoxControl(Name="Payment")
+    items = uia.combo_values(payment, "Payment get values")
+    payment_value = debtor.payment_method
+    print(items)
+    if not payment_value:
+        raise ManualReviewRequired("Create Payment", "Payment method is required")
+    if len([x for x in items if x == payment_value]) > 1:
+        raise ManualReviewRequired("Create Payment", "Payment methods are ambiguous.")
+    if payment_value not in items:
+        ed = _add_payment_method(app, payment_value)
+
+    # re-define it.
+    uia.click(ed.TabItemControl(Name="Miscellaneous"), "Miscellaneous tab")
+    uia.pause()
+    payment = ed.ComboBoxControl(Name="Payment")
+    uia.combo_select(payment, payment_value)
+
+    # 2. Addresses
     # §2.6 leave Customer ID as proposed; enter Company / First / Last.
+    uia.click(ed.TabItemControl(Name="Addresses"), "Addresses tab")
+    uia.pause()
+
     if debtor.company:
         widgets.set_labelled(ed, "Company", debtor.company)
     _set_first_last(ed, debtor)
@@ -88,23 +112,18 @@ def _create_debtor(app: FakturamaApp, order: ExtractedOrder) -> None:
     # interaction needs a capture of the role picker.
     _set_address_type(ed, debtor)
     
-    # 2. Miscellaneous (alias, discount, net)
+    # 3. Miscellaneous (alias, discount, net)
     uia.click(ed.TabItemControl(Name="Miscellaneous"), "Miscellaneous tab")
+    uia.pause()
+
     widgets.set_labelled(ed, "Alias name", debtor.alias)
     widgets.set_labelled(ed, "Discount", "0%")
     uia.combo_select(ed.ComboBoxControl(Name="Net or Gross"), "Net")
-    
-    # 3. Payment method
-    payment = ed.ComboBoxControl(Name="Net or Gross")
-    
-    
-    raise ManualReviewRequired(
-        "2.8/2.9/2.10 debtor create",
-        "Main-address fields filled. Address-role assignment, Miscellaneous "
-        "(alias/discount/net), and Payment method selection/creation still need "
-        "a UIA capture of those tabs to ground. Save was NOT performed.",
-        context={"customer": debtor.company},
-    )
+
+    app.window.SendKeys("{Ctrl}s", waitTime=0.2)
+    app.window.SendKeys("{Ctrl}W", waitTime=0.2)
+
+
 
 def _set_address_type(ed, debtor: Debtor) -> None:
     """
@@ -157,7 +176,7 @@ def _country_name(country: str) -> str:
     return country
 
 
-def _confirm_addresses_populated(app: FakturamaApp, order: Order) -> None:
+def _confirm_addresses_populated(app: FakturamaApp, order: ExtractedOrder) -> None:
     """§2.4 — after selecting, confirm the Invoice/Delivery address blocks filled.
     The address preview is an Edit under the 'Invoice address' tab; we check it's
     non-empty. Deep field-by-field matching is a follow-up."""
@@ -172,7 +191,7 @@ def _confirm_addresses_populated(app: FakturamaApp, order: Order) -> None:
             )
 
 
-def _reselect_from_order(app: FakturamaApp, order: Order) -> None:
+def _reselect_from_order(app: FakturamaApp, order: ExtractedOrder) -> None:
     """§2.12–2.13 — return to the still-open Order, reopen the picker, select the
     newly saved Debtor. (Depends on the selector row-pick being grounded.)"""
     app.activate_editor_tab("New Order")
@@ -181,3 +200,40 @@ def _reselect_from_order(app: FakturamaApp, order: Order) -> None:
         "2.12 re-select debtor",
         "Return-to-Order re-selection pending the selector-dialog capture.",
     )
+
+def _add_payment_method(app: FakturamaApp, payment_method: str) -> uiautomation.Control:
+    # 1. Click Data
+    window = app.window
+    data = window.MenuItemControl(Name="Data")
+    if not data.Exists():
+        raise RuntimeError("Could not find Data")
+
+    uia.click(data, "Data Menu Item")
+    # Give the UI time to open the Data menu
+    uia.pause(3)
+
+    # 2. Find and click "terms of payment"
+    terms = window.MenuItemControl(Name="terms of payment")
+    if not terms.Exists():
+        raise RuntimeError("Could not find terms of payment")
+    uia.click(terms, "terms of payment")
+    uia.pause()
+
+    # now add the element
+    uia.click(window.ButtonControl(Name="Create a new term of payment"), "Create a new term of payment")
+
+    pane = window.PaneControl(Name="New Term of Payment")
+    widgets.set_labelled(pane, "Name", payment_method)
+    widgets.set_labelled(pane, "Description", payment_method)
+
+    uia.click(window.ButtonControl(Name="Save the current contents"), "Save the current contents")
+    uia.pause()
+
+    window.SendKeys("{Ctrl}s", waitTime=0.2)
+    window.SendKeys("{Ctrl}W", waitTime=0.2)
+    window.SendKeys("{Ctrl}W", waitTime=0.2)
+
+    # restore the old editor state
+    navigation.new_contact(app)  # §2.5 left 'New' panel
+    return app.wait_editor("New Debtor")
+

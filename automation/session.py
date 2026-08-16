@@ -55,10 +55,17 @@ class FakturamaApp:
         return cls.attach(timeout=SETTINGS.launch_wait)
 
     def focus(self) -> None:
+        # Control has no SetActive; the real Win32 call is what reliably
+        # raises Fakturama over an unrelated foreground window (e.g. the
+        # terminal driving this REPL) rather than just moving input focus.
         try:
-            self.window.SetActive()
+            auto.SetForegroundWindow(self.window.NativeWindowHandle)
         except Exception:
+            pass
+        try:
             self.window.SetFocus()
+        except Exception:
+            pass
         uia.pause()
 
     # -- editors ---------------------------------------------------------

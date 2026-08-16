@@ -2,3 +2,8 @@
 uiautomation>=2.0.20        # UIA wrapper (yinkaisheng); pulls in comtypes
 comtypes>=1.2.0             # transitive dep of uiautomation, pinned for clarity
 # Flask + python-dotenv are already in the base app.
+
+# Selector-dialog row reads (NatTable grids expose no rows to UIA).
+pytesseract>=0.3.10          # also requires the Tesseract-OCR binary on PATH
+                              # (or set TESSERACT_CMD) — https://github.com/UB-Mannheim/tesseract/wiki
+Pillow>=10.0.0
