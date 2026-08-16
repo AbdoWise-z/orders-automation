@@ -1,0 +1,4 @@
+# Automation layer (Windows only). Add to your existing requirements.
+uiautomation>=2.0.20        # UIA wrapper (yinkaisheng); pulls in comtypes
+comtypes>=1.2.0             # transitive dep of uiautomation, pinned for clarity
+# Flask + python-dotenv are already in the base app.
